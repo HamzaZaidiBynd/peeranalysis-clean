@@ -57,6 +57,55 @@ def peer_limit(k: int | None, limit: int | None, *, default: int = 10) -> int:
     return max(1, min(40, int(value)))
 
 
+def resolve_company_cin(data: Any, cin: str | None, query: str | None) -> str:
+    normalized_cin = (cin or "").strip().upper()
+    if normalized_cin:
+        if normalized_cin not in data.rows_by_cin:
+            raise HTTPException(status_code=404, detail=f"Company not found: {normalized_cin}")
+        return normalized_cin
+
+    raw_query = (query or "").strip()
+    if not raw_query:
+        raise HTTPException(status_code=400, detail="Provide either cin or name/q")
+
+    matches = data.search(
+        query=raw_query,
+        limit=10,
+        include_flagged=True,
+        state_filter="",
+        min_revenue=None,
+        max_revenue=None,
+    )
+    exact_matches = [
+        company
+        for company in matches
+        if company.get("name", "").strip().lower() == raw_query.lower()
+        or company.get("cin", "").strip().upper() == raw_query.upper()
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0]["cin"].strip().upper()
+    if len(matches) == 1:
+        return matches[0]["cin"].strip().upper()
+    if matches:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Multiple companies matched. Retry with cin or exact name.",
+                "matches": [
+                    {
+                        "cin": company.get("cin", ""),
+                        "name": company.get("name", ""),
+                        "state_name": company.get("state_name", ""),
+                        "is_enriched": company.get("is_enriched"),
+                        "revenue_crore": company.get("revenue_crore"),
+                    }
+                    for company in matches
+                ],
+            },
+        )
+    raise HTTPException(status_code=404, detail=f"Company not found: {raw_query}")
+
+
 def summarize_trace_company(company: dict[str, Any], index: int) -> dict[str, Any]:
     return {
         "rank": index,
@@ -289,7 +338,9 @@ def company(cin: str) -> dict[str, Any]:
 
 @app.get("/api/peers", response_model=None)
 def peers(
-    cin: str,
+    cin: str | None = None,
+    name: str | None = None,
+    q: str | None = None,
     k: int | None = Query(None, ge=1, le=40),
     limit: int | None = Query(None, ge=1, le=40),
     rerank: str | bool = False,
@@ -306,7 +357,7 @@ def peers(
     scoring_method: str = "product_max_sim",
 ):
     data = get_peer_data()
-    normalized_cin = cin.strip().upper()
+    normalized_cin = resolve_company_cin(data, cin, name or q)
     requested_limit = peer_limit(k, limit)
     filters = {
         "exclude_flagged": parse_bool_value(exclude_flagged, True),

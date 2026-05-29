@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -49,6 +50,7 @@ class ApiRerankModeTests(unittest.TestCase):
     @patch("api.index.get_peer_data")
     def test_default_rerank_sends_full_union_directly_to_openai(self, mock_data, mock_union, mock_openai) -> None:
         payload = fake_union_payload()
+        mock_data.return_value = SimpleNamespace(rows_by_cin={"TARGET": {}})
         mock_union.return_value = payload
         mock_openai.return_value = (
             payload["peers"][:20],
@@ -81,6 +83,7 @@ class ApiRerankModeTests(unittest.TestCase):
     @patch("api.index.get_peer_data")
     def test_cohere_openai_mode_keeps_old_shortlist_flow(self, mock_data, mock_union, mock_openai, mock_cohere) -> None:
         payload = fake_union_payload()
+        mock_data.return_value = SimpleNamespace(rows_by_cin={"TARGET": {}})
         mock_union.return_value = payload
         mock_cohere.return_value = (
             payload["peers"][:25],
@@ -118,6 +121,53 @@ class ApiRerankModeTests(unittest.TestCase):
         mock_openai.assert_called_once()
         self.assertEqual(len(mock_openai.call_args.kwargs["candidates"]), 25)
         self.assertEqual(mock_openai.call_args.kwargs["final_count"], 5)
+
+    @patch("api.index.select_final_peers_with_openai")
+    @patch("api.index.build_union_rerank_payload")
+    @patch("api.index.get_peer_data")
+    def test_peers_can_resolve_exact_company_name(self, mock_data, mock_union, mock_openai) -> None:
+        data = SimpleNamespace(
+            rows_by_cin={"TARGET": {}},
+            search=lambda **_kwargs: [{"cin": "TARGET", "name": "TARGET LIMITED"}],
+        )
+        payload = fake_union_payload()
+        mock_data.return_value = data
+        mock_union.return_value = payload
+        mock_openai.return_value = (
+            payload["peers"][:5],
+            {
+                "provider": "azure_openai",
+                "used": True,
+                "fallback": False,
+                "candidate_count": 63,
+                "returned_count": 5,
+                "selected_numbers": list(range(1, 6)),
+            },
+        )
+
+        response = self.client.get("/api/peers?name=TARGET%20LIMITED&rerank=true&limit=5")
+
+        self.assertEqual(response.status_code, 200)
+        mock_union.assert_called_once()
+        self.assertEqual(mock_union.call_args.args[1], "TARGET")
+
+    @patch("api.index.get_peer_data")
+    def test_peers_returns_409_for_ambiguous_company_name(self, mock_data) -> None:
+        data = SimpleNamespace(
+            rows_by_cin={},
+            search=lambda **_kwargs: [
+                {"cin": "ONE", "name": "ABC LIMITED", "state_name": "Maharashtra", "is_enriched": True, "revenue_crore": 100},
+                {"cin": "TWO", "name": "ABC INDIA LIMITED", "state_name": "Karnataka", "is_enriched": True, "revenue_crore": 200},
+            ],
+        )
+        mock_data.return_value = data
+
+        response = self.client.get("/api/peers?name=ABC&rerank=true&limit=5")
+
+        self.assertEqual(response.status_code, 409)
+        detail = response.json()["detail"]
+        self.assertIn("Multiple companies matched", detail["message"])
+        self.assertEqual(len(detail["matches"]), 2)
 
 
 if __name__ == "__main__":
