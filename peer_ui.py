@@ -1259,15 +1259,15 @@ HTML_PAGE = r"""<!doctype html>
             </div>
             <div class="toolbar-fields">
               <div class="field-medium">
-                <label for="scoringMethod">Scoring <span class="tip" tabindex="0" data-tip="Choose the first-stage scorer that generates candidate peers before optional Cohere reranking.">?</span></label>
+                <label for="scoringMethod">Scoring <span class="tip" tabindex="0" data-tip="Choose the first-stage scorer used when viewing non-reranked peers.">?</span></label>
                 <select id="scoringMethod">
                   <option value="product_max_sim">Product max-sim</option>
                   <option value="company_embedding">Original company embedding</option>
                 </select>
               </div>
               <div class="field-small">
-                <label for="topK">Peers <span class="tip" tabindex="0" data-tip="Number of peers to display for the first-stage scorer. The rerank button uses a 40+40 union, Cohere top 25, then OpenAI top 10.">?</span></label>
-                <input id="topK" type="number" min="1" max="50" value="10">
+                <label for="topK">Peers <span class="tip" tabindex="0" data-tip="Number of peers to display, from 1 to 40. The rerank button sends the deduped 40+40 union directly to OpenAI for this many final peers.">?</span></label>
+                <input id="topK" type="number" min="1" max="40" value="10">
               </div>
               <div class="field-small">
                 <label for="minScore">Min score <span class="tip" tabindex="0" data-tip="Hide candidates below this first-stage similarity score before displaying or reranking.">?</span></label>
@@ -1318,7 +1318,7 @@ HTML_PAGE = r"""<!doctype html>
                 </div>
                 <div id="revenueRangeCaption" class="range-caption">Any revenue</div>
               </div>
-              <button id="rerankButton" class="action-button" type="button">Rerank 40+40 -> 10 <span class="tip" tabindex="0" data-tip="Send the top 40 product max-sim candidates plus top 40 company-embedding candidates to Cohere, then ask OpenAI to select the final top 10 investment-banking peers from Cohere's top 25.">?</span></button>
+              <button id="rerankButton" class="action-button" type="button">Rerank 40+40 -> OpenAI top peers <span class="tip" tabindex="0" data-tip="Send the deduped top 40 product max-sim candidates plus top 40 company-embedding candidates directly to OpenAI to select the requested number of investment-banking peers.">?</span></button>
               <div class="toolbar-settings">
                 <span class="settings-label">Peer result settings</span>
                 <label class="check"><input id="excludeFlaggedPeers" type="checkbox" checked> hide flagged peers <span class="tip" tabindex="0" data-tip="Exclude peer candidates that have enrichment quality flags.">?</span></label>
@@ -1464,11 +1464,11 @@ HTML_PAGE = r"""<!doctype html>
       state.selectedCin = cin;
       renderCompanies();
       $("targetArea").className = "empty";
-      $("targetArea").textContent = rerank ? "Running Cohere + OpenAI investment-banking rerank..." : "Loading peers...";
+      $("targetArea").textContent = rerank ? "Running OpenAI investment-banking rerank..." : "Loading peers...";
       $("peerArea").innerHTML = "";
       const params = new URLSearchParams({
         cin,
-        k: rerank ? "10" : ($("topK").value || "10"),
+        k: $("topK").value || "10",
         exclude_flagged: $("excludeFlaggedPeers").checked ? "true" : "false",
         same_value_chain: $("sameValueChain").checked ? "true" : "false",
         same_customer_type: $("sameCustomerType").checked ? "true" : "false",
@@ -1542,6 +1542,7 @@ HTML_PAGE = r"""<!doctype html>
 
     function renderTrace(trace) {
       if (!trace) return "";
+      const hasCohere = trace.mode === "cohere_openai" || trace.cohere_prompt || trace.cohere_shortlist;
       return `
         <button id="traceToggle" class="trace-button" type="button">Show rerank trace</button>
         <div id="tracePanel" class="trace-panel">
@@ -1549,13 +1550,19 @@ HTML_PAGE = r"""<!doctype html>
             <h3>Initial 40+40 union (${(trace.union_candidates || []).length})</h3>
             ${traceList(trace.union_candidates)}
           </div>
+          ${hasCohere ? `
+            <div class="trace-section">
+              <h3>Cohere prompt</h3>
+              <pre>${esc(trace.cohere_prompt || "")}</pre>
+            </div>
+            <div class="trace-section">
+              <h3>Cohere top 25</h3>
+              ${traceList(trace.cohere_shortlist)}
+            </div>
+          ` : ""}
           <div class="trace-section">
-            <h3>Cohere prompt</h3>
-            <pre>${esc(trace.cohere_prompt || "")}</pre>
-          </div>
-          <div class="trace-section">
-            <h3>Cohere top 25</h3>
-            ${traceList(trace.cohere_shortlist)}
+            <h3>OpenAI candidates (${(trace.openai_candidates || []).length})</h3>
+            ${traceList(trace.openai_candidates)}
           </div>
           <div class="trace-section">
             <h3>OpenAI prompt</h3>
@@ -1794,6 +1801,7 @@ class PeerHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/peers":
                 cin = params.get("cin", [""])[0].strip().upper()
                 use_rerank = parse_bool(params, "rerank", False)
+                rerank_mode = params.get("rerank_mode", ["openai_direct"])[0].strip().lower() or "openai_direct"
                 requested_limit = parse_int(params, "k", 10, 1, 50)
                 filters = {
                     "exclude_flagged": parse_bool(params, "exclude_flagged", True),
@@ -1810,92 +1818,114 @@ class PeerHandler(BaseHTTPRequestHandler):
                     payload = build_union_rerank_payload(self.data, cin, **filters)
                     rerank_limit = 10
                     union_candidate_count = len(payload["peers"])
-                    try:
-                        cohere_peers, cohere_metadata = rerank_peers(
-                            target=payload["target"],
-                            peers=payload["peers"],
-                            top_n=DEFAULT_OPENAI_CANDIDATE_COUNT,
-                            use_derived_categories=False,
-                        )
-                    except Exception as exc:
-                        cohere_peers = [dict(peer) for peer in payload["peers"][:DEFAULT_OPENAI_CANDIDATE_COUNT]]
-                        cohere_metadata = {
-                            "provider": "cohere",
-                            "used": False,
-                            "fallback": True,
-                            "error": f"{type(exc).__name__}: {str(exc)[:300]}",
-                            "candidate_count": len(payload["peers"]),
-                            "returned_count": len(cohere_peers),
-                            "derived_categories": False,
-                        }
+                    openai_candidates = [dict(peer) for peer in payload["peers"]]
+                    cohere_metadata = None
+                    if rerank_mode == "cohere_openai":
+                        try:
+                            cohere_peers, cohere_metadata = rerank_peers(
+                                target=payload["target"],
+                                peers=payload["peers"],
+                                top_n=DEFAULT_OPENAI_CANDIDATE_COUNT,
+                                use_derived_categories=False,
+                            )
+                        except Exception as exc:
+                            cohere_peers = [dict(peer) for peer in payload["peers"][:DEFAULT_OPENAI_CANDIDATE_COUNT]]
+                            cohere_metadata = {
+                                "provider": "cohere",
+                                "used": False,
+                                "fallback": True,
+                                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                                "candidate_count": len(payload["peers"]),
+                                "returned_count": len(cohere_peers),
+                                "derived_categories": False,
+                            }
+                        openai_candidates = cohere_peers
                     final_peers, openai_metadata = select_final_peers_with_openai(
                         target=payload["target"],
-                        candidates=cohere_peers,
+                        candidates=openai_candidates,
                         final_count=rerank_limit,
                     )
-                    cohere_prompt = rerank_query(payload["target"], use_derived_categories=False)
-                    openai_prompt = build_openai_final_prompt(payload["target"], cohere_peers)
+                    openai_prompt = build_openai_final_prompt(payload["target"], openai_candidates)
                     payload["rerank_trace"] = {
+                        "mode": rerank_mode,
                         "union_candidates": [
                             summarize_trace_company(peer, index)
                             for index, peer in enumerate(payload["peers"], start=1)
                         ],
-                        "cohere_prompt": cohere_prompt,
-                        "cohere_documents": [
-                            {
-                                "rank": index,
-                                "name": peer.get("name", ""),
-                                "cin": peer.get("cin", ""),
-                                "document": format_company_for_rerank(
-                                    peer,
-                                    target=payload["target"],
-                                    use_derived_categories=False,
-                                    include_match_evidence=False,
-                                ),
-                            }
-                            for index, peer in enumerate(payload["peers"], start=1)
-                        ],
-                        "cohere_shortlist": [
-                            summarize_trace_company(peer, index)
-                            for index, peer in enumerate(cohere_peers, start=1)
-                        ],
                         "openai_prompt": openai_prompt,
                         "openai_candidates": [
                             summarize_openai_candidate(peer, index)
-                            for index, peer in enumerate(cohere_peers, start=1)
+                            for index, peer in enumerate(openai_candidates, start=1)
                         ],
                         "openai_final": [
                             summarize_trace_company(peer, index)
                             for index, peer in enumerate(final_peers, start=1)
                         ],
                         "openai_metadata": openai_metadata,
-                        "cohere_metadata": cohere_metadata,
                     }
+                    if rerank_mode == "cohere_openai" and cohere_metadata is not None:
+                        cohere_prompt = rerank_query(payload["target"], use_derived_categories=False)
+                        payload["rerank_trace"].update(
+                            {
+                                "cohere_prompt": cohere_prompt,
+                                "cohere_documents": [
+                                    {
+                                        "rank": index,
+                                        "name": peer.get("name", ""),
+                                        "cin": peer.get("cin", ""),
+                                        "document": format_company_for_rerank(
+                                            peer,
+                                            target=payload["target"],
+                                            use_derived_categories=False,
+                                            include_match_evidence=False,
+                                        ),
+                                    }
+                                    for index, peer in enumerate(payload["peers"], start=1)
+                                ],
+                                "cohere_shortlist": [
+                                    summarize_trace_company(peer, index)
+                                    for index, peer in enumerate(openai_candidates, start=1)
+                                ],
+                                "cohere_metadata": cohere_metadata,
+                            }
+                        )
                     payload["peers"] = final_peers
-                    payload["method"] = (
-                        f"{payload['method']} + "
-                        f"{'Cohere fallback' if cohere_metadata.get('fallback') else 'Cohere rerank'} "
-                        f"{cohere_metadata['candidate_count']} -> "
-                        f"{len(cohere_peers)} + OpenAI final {len(cohere_peers)} -> {len(final_peers)}"
-                    )
+                    if rerank_mode == "cohere_openai" and cohere_metadata is not None:
+                        payload["method"] = (
+                            f"{payload['method']} + "
+                            f"{'Cohere fallback' if cohere_metadata.get('fallback') else 'Cohere rerank'} "
+                            f"{cohere_metadata['candidate_count']} -> "
+                            f"{len(openai_candidates)} + OpenAI final {len(openai_candidates)} -> {len(final_peers)}"
+                        )
+                    else:
+                        payload["method"] = (
+                            f"{payload['method']} + OpenAI direct final "
+                            f"{len(openai_candidates)} -> {len(final_peers)}"
+                        )
                     payload["rerank"] = {
-                        "cohere": cohere_metadata,
+                        "mode": rerank_mode,
                         "openai": openai_metadata,
-                        "candidate_count": cohere_metadata["candidate_count"],
+                        "candidate_count": len(openai_candidates),
                         "returned_count": len(final_peers),
                         "candidate_count_before_filter": union_candidate_count,
                         "candidate_count_after_filter": union_candidate_count,
-                        "union_candidate_count": cohere_metadata["candidate_count"],
-                        "cohere_candidate_count": cohere_metadata["candidate_count"],
-                        "cohere_returned_count": len(cohere_peers),
-                        "cohere_fallback": cohere_metadata.get("fallback", False),
+                        "union_candidate_count": union_candidate_count,
                         "openai_candidate_count": openai_metadata["candidate_count"],
                         "openai_returned_count": openai_metadata["returned_count"],
                         "openai_fallback": openai_metadata["fallback"],
                     }
+                    if rerank_mode == "cohere_openai" and cohere_metadata is not None:
+                        payload["rerank"].update(
+                            {
+                                "cohere": cohere_metadata,
+                                "cohere_candidate_count": cohere_metadata["candidate_count"],
+                                "cohere_returned_count": len(openai_candidates),
+                                "cohere_fallback": cohere_metadata.get("fallback", False),
+                            }
+                        )
                     payload["filters"]["rerank"] = True
-                    payload["filters"]["use_derived_categories"] = False
-                    payload["filters"]["rerank_candidate_count"] = cohere_metadata["candidate_count"]
+                    payload["filters"]["rerank_mode"] = rerank_mode
+                    payload["filters"]["rerank_candidate_count"] = len(openai_candidates)
                 else:
                     payload = self.data.peers(
                         cin=cin,

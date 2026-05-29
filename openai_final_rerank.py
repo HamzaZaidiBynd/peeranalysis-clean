@@ -28,7 +28,7 @@ def _load_local_env() -> None:
 
 def parse_openai_rank_numbers(raw: str, candidate_count: int, expected_count: int = DEFAULT_OPENAI_FINAL_TOP_N) -> list[int]:
     text = (raw or "").strip()
-    if not re.fullmatch(r"\d{1,2}(?:\s*,\s*\d{1,2})*", text):
+    if not re.fullmatch(r"\d+(?:\s*,\s*\d+)*", text):
         raise ValueError("OpenAI response must contain only comma-separated numbers")
 
     numbers = [int(part.strip()) for part in text.split(",")]
@@ -77,7 +77,15 @@ def _company_block(company: dict[str, Any], *, number: int | None = None) -> str
     )
 
 
-def build_openai_final_prompt(target: dict[str, Any], candidates: list[dict[str, Any]]) -> str:
+def _example_numbers(final_count: int, candidate_count: int) -> str:
+    return ", ".join(str(index) for index in range(1, min(final_count, candidate_count) + 1))
+
+
+def build_openai_final_prompt(
+    target: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    final_count: int = DEFAULT_OPENAI_FINAL_TOP_N,
+) -> str:
     candidate_blocks = "\n\n".join(
         _company_block(candidate, number=index)
         for index, candidate in enumerate(candidates, start=1)
@@ -86,7 +94,7 @@ def build_openai_final_prompt(target: dict[str, Any], candidates: list[dict[str,
         [
             "You are selecting investment banking comparable-company peers.",
             (
-                "Choose the 10 companies from the numbered candidate list that would make "
+                f"Choose the {final_count} companies from the numbered candidate list that would make "
                 "the strongest peer set for valuation or benchmarking of the target company. "
                 "Prioritize direct business-model and core-product/service similarity over "
                 "broad thematic similarity, adjacent suppliers, customers, distributors, or "
@@ -95,9 +103,9 @@ def build_openai_final_prompt(target: dict[str, Any], candidates: list[dict[str,
                 "strong direct peer just because revenue is closer."
             ),
             (
-                "Response must be 10 numbers between 1 and 25, separated by commas as follows "
+                f"Response must be {final_count} numbers between 1 and {len(candidates)}, separated by commas as follows "
                 "(nothing more, nothing less):\n\n"
-                "3, 7, 1, 12, 4, 9, 2, 18, 6, 10"
+                f"{_example_numbers(final_count, len(candidates))}"
             ),
             "Target company:",
             _company_block(target),
@@ -150,7 +158,7 @@ def select_final_peers_with_openai(
             "returned_count": final_count,
         }
 
-    prompt = build_openai_final_prompt(target, candidates)
+    prompt = build_openai_final_prompt(target, candidates, final_count=final_count)
     timeout_seconds = float(os.environ.get("AZURE_OPENAI_TIMEOUT", "30"))
     client = AzureOpenAI(
         azure_endpoint=endpoint,
