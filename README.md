@@ -51,6 +51,15 @@ Open `http://127.0.0.1:8766`.
 .venv/bin/python top_peers.py "HDFC Bank" --top 5
 ```
 
+By default this prints the current pipeline top peers and also asks Azure OpenAI
+to select a separate top 10 from a compact CSV of the enriched universe. This
+full-universe call is slower and more expensive than the normal pipeline. For a
+cheaper current-pipeline-only run:
+
+```bash
+.venv/bin/python top_peers.py "HDFC Bank" --top 5 --skip-universe-chatgpt
+```
+
 ## Deploy
 
 This repo is configured for Vercel with `vercel.json`.
