@@ -97,7 +97,13 @@ def find_company(data: Any, query: str) -> dict[str, Any]:
         print("Enter a number from the list.")
 
 
-def rank_top_peers(data: Any, cin: str, filters: dict[str, Any], final_count: int) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+def rank_top_peers(
+    data: Any,
+    cin: str,
+    filters: dict[str, Any],
+    final_count: int,
+    include_retrieval_evidence: bool,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
     payload = build_union_rerank_payload(data, cin, **filters)
     try:
         cohere_peers, cohere_metadata = rerank_peers(
@@ -105,6 +111,7 @@ def rank_top_peers(data: Any, cin: str, filters: dict[str, Any], final_count: in
             peers=payload["peers"],
             top_n=DEFAULT_OPENAI_CANDIDATE_COUNT,
             use_derived_categories=False,
+            include_retrieval_evidence=include_retrieval_evidence,
         )
     except Exception as exc:
         cohere_peers = [dict(peer) for peer in payload["peers"][:DEFAULT_OPENAI_CANDIDATE_COUNT]]
@@ -116,6 +123,7 @@ def rank_top_peers(data: Any, cin: str, filters: dict[str, Any], final_count: in
             "candidate_count": len(payload["peers"]),
             "returned_count": len(cohere_peers),
             "derived_categories": False,
+            "retrieval_evidence": include_retrieval_evidence,
         }
 
     final_peers, openai_metadata = select_final_peers_with_openai(
@@ -133,6 +141,7 @@ def rank_top_peers(data: Any, cin: str, filters: dict[str, Any], final_count: in
         "union_candidate_count": len(payload["peers"]),
         "cohere": cohere_metadata,
         "openai": openai_metadata,
+        "cohere_retrieval_evidence": include_retrieval_evidence,
     }
     return payload["target"], final_peers[:final_count], metadata
 
@@ -391,6 +400,7 @@ def main() -> int:
     parser.add_argument("--top", type=int, default=5, help="Number of final peers to print. Defaults to 5.")
     parser.add_argument("--use-revenue", action="store_true", help="Apply revenue weighting during candidate generation.")
     parser.add_argument("--use-enum-weighting", action="store_true", help="Apply enum weighting during candidate generation.")
+    parser.add_argument("--cohere-retrieval-evidence", action="store_true", help="Include candidate source and similarity scores in Cohere documents.")
     parser.add_argument("--skip-universe-chatgpt", action="store_true", help="Only run the current pipeline; do not ask OpenAI over the full enriched universe.")
     parser.add_argument("--universe-max-rows", type=int, default=None, help="Limit rows sent to OpenAI for testing. Defaults to all enriched companies except the target.")
     parser.add_argument("--universe-field-chars", type=int, default=240, help="Max characters per long CSV field sent to OpenAI. Defaults to 240.")
@@ -406,7 +416,13 @@ def main() -> int:
     filters["use_revenue"] = args.use_revenue
     filters["use_enum_weighting"] = args.use_enum_weighting
 
-    target, peers, metadata = rank_top_peers(data, target["cin"], filters, final_count=max(1, args.top))
+    target, peers, metadata = rank_top_peers(
+        data,
+        target["cin"],
+        filters,
+        final_count=max(1, args.top),
+        include_retrieval_evidence=args.cohere_retrieval_evidence,
+    )
     universe_peers: list[dict[str, Any]] = []
     universe_metadata: dict[str, Any] = {"skipped": True}
     if not args.skip_universe_chatgpt:

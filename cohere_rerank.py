@@ -627,8 +627,26 @@ def format_company_for_rerank(
     target: dict[str, Any] | None = None,
     use_derived_categories: bool = True,
     include_match_evidence: bool = False,
+    include_retrieval_evidence: bool = False,
 ) -> str:
     lines: list[str] = []
+    if include_retrieval_evidence:
+        sources = company.get("rerank_candidate_sources") or []
+        product_score = company.get("product_candidate_score")
+        company_score = company.get("company_candidate_score")
+        source_consensus = "both_scorers" if len(sources) > 1 else "single_scorer"
+        lines.extend(
+            [
+                "retrieval_evidence:",
+                f"  candidate_sources: {', '.join(sources) or 'unknown'}",
+                f"  source_consensus: {source_consensus}",
+                f"  product_candidate_score: {product_score}",
+                f"  product_signal_strength: {_score_strength(product_score)}",
+                f"  company_candidate_score: {company_score}",
+                f"  company_signal_strength: {_score_strength(company_score)}",
+                "",
+            ]
+        )
     if target is not None and include_match_evidence:
         evidence = build_match_evidence(target, company, use_derived_categories=use_derived_categories)
         lines.extend(
@@ -790,6 +808,9 @@ def rerank_query(target: dict[str, Any], use_derived_categories: bool = True) ->
                 "to the target's secondary products. When two candidates both look like "
                 "direct operating peers, use the product and company similarity scores as "
                 "supporting signals, not as substitutes for business judgment. "
+                "If retrieval_evidence is present, treat candidates with both product_max_sim "
+                "and company_embedding sources plus medium/high scores as high-confidence "
+                "candidates unless the business profile clearly contradicts peer fit. "
                 "For branded retail targets, prefer own-brand retail chains over bullion "
                 "traders, fashion marketplaces, and wholesalers. For vehicle targets, prefer "
                 "OEMs above dealers and component suppliers. For FMCG brand targets, prefer "
@@ -813,6 +834,7 @@ def rerank_peers(
     peers: list[dict[str, Any]],
     top_n: int,
     use_derived_categories: bool = True,
+    include_retrieval_evidence: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     api_key = os.environ.get("COHERE_API_KEY", "").strip()
     if not api_key:
@@ -836,6 +858,7 @@ def rerank_peers(
                 target=target,
                 use_derived_categories=use_derived_categories,
                 include_match_evidence=False,
+                include_retrieval_evidence=include_retrieval_evidence,
             )
             for peer in peers
         ],
@@ -884,4 +907,5 @@ def rerank_peers(
         "candidate_count": len(peers),
         "returned_count": len(reranked),
         "derived_categories": use_derived_categories,
+        "retrieval_evidence": include_retrieval_evidence,
     }

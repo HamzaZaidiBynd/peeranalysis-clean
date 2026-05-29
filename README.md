@@ -60,6 +60,13 @@ cheaper current-pipeline-only run:
 .venv/bin/python top_peers.py "HDFC Bank" --top 5 --skip-universe-chatgpt
 ```
 
+To test whether Cohere improves when it can see candidate-source and similarity
+score evidence:
+
+```bash
+.venv/bin/python top_peers.py "Tata Consultancy Services" --top 10 --cohere-retrieval-evidence --skip-universe-chatgpt
+```
+
 ## Deploy
 
 This repo is configured for Vercel with `vercel.json`.
