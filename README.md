@@ -45,6 +45,12 @@ Open `http://127.0.0.1:8766`.
 .venv/bin/python -m unittest test_openai_final_rerank.py test_rerank_candidate_pool.py
 ```
 
+## CLI top peers
+
+```bash
+.venv/bin/python top_peers.py "HDFC Bank" --top 5
+```
+
 ## Deploy
 
 This repo is configured for Vercel with `vercel.json`.
