@@ -339,11 +339,12 @@ def company(cin: str) -> dict[str, Any]:
 @app.get("/api/peers", response_model=None)
 def peers(
     cin: str | None = None,
+    company: str | None = None,
     name: str | None = None,
     q: str | None = None,
     k: int | None = Query(None, ge=1, le=40),
     limit: int | None = Query(None, ge=1, le=40),
-    rerank: str | bool = False,
+    rerank: str | bool = True,
     rerank_mode: str = "openai_direct",
     exclude_flagged: str | bool = True,
     same_value_chain: str | bool = False,
@@ -357,7 +358,7 @@ def peers(
     scoring_method: str = "product_max_sim",
 ):
     data = get_peer_data()
-    normalized_cin = resolve_company_cin(data, cin, name or q)
+    normalized_cin = resolve_company_cin(data, cin, company or name or q)
     requested_limit = peer_limit(k, limit)
     filters = {
         "exclude_flagged": parse_bool_value(exclude_flagged, True),

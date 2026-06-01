@@ -1480,7 +1480,7 @@ HTML_PAGE = r"""<!doctype html>
         min_score: $("minScore").value || "0",
         scoring_method: $("scoringMethod").value || "product_max_sim",
       });
-      if (rerank) params.set("rerank", "true");
+      params.set("rerank", rerank ? "true" : "false");
       const data = await api(`/api/peers?${params.toString()}`);
       renderPeers(data);
     }

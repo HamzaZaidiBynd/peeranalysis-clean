@@ -47,12 +47,13 @@ Open `http://127.0.0.1:8766`.
 ## API
 
 ```bash
-curl "http://127.0.0.1:8766/api/peers?cin=L72200KA1981PLC013115&rerank=true&limit=20"
+curl "http://127.0.0.1:8766/api/peers?company=INFOSYS%20LIMITED&limit=20"
 ```
 
-Use `k` or `limit` to request 1-40 peers. The default rerank mode sends the
-deduped 40+40 union directly to Azure OpenAI. For the old comparison flow, add
-`rerank_mode=cohere_openai`.
+Use `company` for a company name or CIN, and use `k` or `limit` to request 1-40
+peers. The public API reranks by default using the deduped 40+40 union directly
+with Azure OpenAI. For raw first-stage results, add `rerank=false`; for the old
+Cohere comparison flow, add `rerank_mode=cohere_openai`.
 
 ## Tests
 

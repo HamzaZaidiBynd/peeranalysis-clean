@@ -64,7 +64,7 @@ class ApiRerankModeTests(unittest.TestCase):
             },
         )
 
-        response = self.client.get("/api/peers?cin=TARGET&rerank=true&limit=20")
+        response = self.client.get("/api/peers?cin=TARGET&limit=20")
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
@@ -148,6 +148,36 @@ class ApiRerankModeTests(unittest.TestCase):
         response = self.client.get("/api/peers?name=TARGET%20LIMITED&rerank=true&limit=5")
 
         self.assertEqual(response.status_code, 200)
+        mock_union.assert_called_once()
+        self.assertEqual(mock_union.call_args.args[1], "TARGET")
+
+    @patch("api.index.select_final_peers_with_openai")
+    @patch("api.index.build_union_rerank_payload")
+    @patch("api.index.get_peer_data")
+    def test_peers_can_resolve_company_alias(self, mock_data, mock_union, mock_openai) -> None:
+        data = SimpleNamespace(
+            rows_by_cin={"TARGET": {}},
+            search=lambda **_kwargs: [{"cin": "TARGET", "name": "TARGET LIMITED"}],
+        )
+        payload = fake_union_payload()
+        mock_data.return_value = data
+        mock_union.return_value = payload
+        mock_openai.return_value = (
+            payload["peers"][:5],
+            {
+                "provider": "azure_openai",
+                "used": True,
+                "fallback": False,
+                "candidate_count": 63,
+                "returned_count": 5,
+                "selected_numbers": list(range(1, 6)),
+            },
+        )
+
+        response = self.client.get("/api/peers?company=TARGET%20LIMITED&limit=5")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["rerank"]["mode"], "openai_direct")
         mock_union.assert_called_once()
         self.assertEqual(mock_union.call_args.args[1], "TARGET")
 
